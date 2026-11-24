@@ -11,6 +11,30 @@ export const PRESET_COMMENTS = [
 ];
 export const PRESET_REPLY = '예시 답글: 같은 부분을 다시 읽어 보고 싶습니다.';
 export const EXAMPLE_PHRASE = '열린 책상';
+export const MAX_COMMENT_LENGTH = 500;
+export const TOPICS = [
+  { id: 'interest', num: '①', label: '흥미로운 점' },
+  { id: 'visit', num: '②', label: '실제로 보고 싶은지' },
+  { id: 'space', num: '③', label: '공간에서의 가능성' },
+];
+export const TABS = ['all', 'page'];
+
+// ---------- 댓글 입력 검증 ----------
+/** 본문: 문자열 · 공백만은 거부 · 최대 길이. 원문 그대로 저장하고 표시 단계에서 textContent로 넣는다(실행 안 됨). */
+export function validateBody(text) {
+  if (typeof text !== 'string') throw new Error('댓글 내용이 문자열이 아닙니다.');
+  const trimmed = text.replace(/\r\n?/g, '\n').trim();
+  if (!trimmed) throw new Error('내용을 입력해 주세요. 공백만으로는 남길 수 없습니다.');
+  if ([...trimmed].length > MAX_COMMENT_LENGTH) throw new Error(`댓글은 ${MAX_COMMENT_LENGTH}자까지만 가능합니다.`);
+  return trimmed;
+}
+/** 꼭지 태그: TOPICS id의 부분집합만, 중복 제거, 정의 순서. */
+export function validateTags(tags = []) {
+  if (!Array.isArray(tags)) throw new Error('꼭지 선택이 올바르지 않습니다.');
+  const ids = TOPICS.map((t) => t.id);
+  for (const t of tags) if (!ids.includes(t)) throw new Error('알 수 없는 이야기 꼭지입니다.');
+  return ids.filter((id) => tags.includes(id));
+}
 
 // ---------- 기하 ----------
 const finite = (n) => typeof n === 'number' && Number.isFinite(n);
@@ -109,6 +133,7 @@ export function createReviewStore() {
     score: null,
     completed: false,
     filter: 'all',
+    tab: 'all',
     selectedHighlightId: null,
     activeCommentId: null,
   };
@@ -140,16 +165,15 @@ export function createReviewStore() {
       emit();
     },
 
-    addComment({ highlightId = null, presetIndex }) {
-      const body = PRESET_COMMENTS[presetIndex];
-      if (!body) throw new Error('댓글 예시를 선택해 주세요.');
+    addComment({ highlightId = null, body, tags = [] }) {
+      const text = validateBody(body), tagList = validateTags(tags);
       if (highlightId && !state.highlights.some((h) => h.id === highlightId)) {
         throw new Error('연결할 하이라이트를 찾을 수 없습니다.');
       }
       const h = state.highlights.find((x) => x.id === highlightId);
       const c = {
         id: nextId('c'), highlightId: h ? h.id : null, page: h ? h.page : null,
-        quote: h ? h.text : null, body, author: AUTHOR, replies: [], createdAt: Date.now(),
+        quote: h ? h.text : null, body: text, tags: tagList, author: AUTHOR, replies: [], createdAt: Date.now(),
       };
       state.comments.push(c);
       state.activeCommentId = c.id;
@@ -157,14 +181,49 @@ export function createReviewStore() {
       return c;
     },
 
-    addReply(commentId) {
+    /** 같은 검증으로 본문·꼭지 수정. 하이라이트 연결(highlightId·quote)은 바뀌지 않는다. */
+    updateComment(id, { body, tags }) {
+      const c = state.comments.find((x) => x.id === id);
+      if (!c) throw new Error('수정할 댓글을 찾을 수 없습니다.');
+      if (body !== undefined) c.body = validateBody(body);
+      if (tags !== undefined) c.tags = validateTags(tags);
+      c.editedAt = Date.now();
+      state.activeCommentId = c.id;
+      emit();
+      return c;
+    },
+
+    addReply(commentId, body = PRESET_REPLY) {
       const c = state.comments.find((x) => x.id === commentId);
       if (!c) throw new Error('답글을 달 댓글을 찾을 수 없습니다.');
-      const r = { id: nextId('r'), body: PRESET_REPLY, author: REPLY_AUTHOR, createdAt: Date.now() };
+      const r = { id: nextId('r'), body: validateBody(body), author: REPLY_AUTHOR, createdAt: Date.now() };
       c.replies.push(r); // 답글은 1단계만: 답글의 답글은 구조상 존재하지 않는다.
       state.activeCommentId = c.id;
       emit();
       return r;
+    },
+
+    updateReply(commentId, replyId, body) {
+      const c = state.comments.find((x) => x.id === commentId);
+      const r = c?.replies.find((x) => x.id === replyId);
+      if (!r) throw new Error('수정할 답글을 찾을 수 없습니다.');
+      r.body = validateBody(body); r.editedAt = Date.now();
+      emit();
+      return r;
+    },
+
+    setTab(tab) {
+      if (!TABS.includes(tab)) throw new Error('알 수 없는 탭입니다.');
+      state.tab = tab;
+      emit();
+    },
+
+    /** 탭별 댓글: 'all' 전체, 'page' 현재 쪽에 연결된 댓글만(전체 문서 댓글은 쪽 탭에 없음). */
+    visibleComments(page) {
+      return state.tab === 'page' ? state.comments.filter((c) => c.page === page) : state.comments;
+    },
+    commentCount(page) {
+      return { all: state.comments.length, page: state.comments.filter((c) => c.page === page).length };
     },
 
     setActiveComment(id) {
@@ -206,7 +265,7 @@ export function createReviewStore() {
 
     reset() {
       state.highlights = []; state.comments = []; state.score = null; state.completed = false;
-      state.filter = 'all'; state.selectedHighlightId = null; state.activeCommentId = null;
+      state.filter = 'all'; state.tab = 'all'; state.selectedHighlightId = null; state.activeCommentId = null;
       emit();
     },
   };

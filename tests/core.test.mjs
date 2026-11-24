@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   clipRectToPage, cssRectToPdfRect, pdfRectToCssBox, isValidPdfRect, selectionRectsToPdf,
   normalizePdfRect, nextZoom, isValidScore, createReviewStore, ZOOM_LEVELS, PRESET_COMMENTS, AUTHOR,
+  validateBody, validateTags, MAX_COMMENT_LENGTH, TOPICS, PRESET_REPLY,
 } from '../core.mjs';
 
 /** pdf.js PageViewport(회전 0)와 같은 수학: transform = [s,0,0,-s,0,h*s]. */
@@ -99,26 +100,94 @@ test('스토어: 하이라이트 추가 검증과 선택 상태', () => {
   assert.equal(s.state.selectedHighlightId, null);
 });
 
-test('스토어: 댓글은 프리셋만, 하이라이트 연결 또는 전체 문서, 답글은 1단계', () => {
+test('댓글 본문 검증: 공백만 거부 · 500자 경계 · 줄바꿈 정규화 · 스크립트 문자열은 그대로 글자', () => {
+  assert.equal(MAX_COMMENT_LENGTH, 500);
+  assert.throws(() => validateBody(''), /입력/);
+  assert.throws(() => validateBody('   \n\t '), /공백/);
+  assert.throws(() => validateBody(null), /문자열/);
+  assert.equal(validateBody('  안녕 \r\n세상  '), '안녕 \n세상');
+  assert.equal(validateBody('가'.repeat(500)).length, 500);
+  assert.throws(() => validateBody('가'.repeat(501)), /500자/);
+  assert.throws(() => validateBody('😀'.repeat(501)), /500자/, '코드포인트 기준');
+  const xss = '<script>alert(1)</script>';
+  assert.equal(validateBody(xss), xss, '저장은 원문, 표시는 textContent');
+});
+
+test('꼭지 태그 검증: 정의된 3개만 · 중복 제거 · 정의 순서 · 빈 배열 허용', () => {
+  assert.deepEqual(TOPICS.map((t) => t.id), ['interest', 'visit', 'space']);
+  assert.deepEqual(validateTags(), []);
+  assert.deepEqual(validateTags(['space', 'interest', 'space']), ['interest', 'space']);
+  assert.throws(() => validateTags(['other']), /꼭지/);
+  assert.throws(() => validateTags('interest'));
+});
+
+test('스토어: 자유 입력 댓글(본문+꼭지), 하이라이트 연결 또는 전체 문서, 답글은 1단계', () => {
   const s = createReviewStore();
   const h = s.addHighlight({ page: 1, rects: [[0, 0, 10, 10]], text: '문장' });
-  assert.throws(() => s.addComment({ highlightId: h.id, presetIndex: 9 }), /예시/);
-  assert.throws(() => s.addComment({ highlightId: 'ghost', presetIndex: 0 }), /찾을 수 없습니다/);
-  const c1 = s.addComment({ highlightId: h.id, presetIndex: 0 });
+  assert.throws(() => s.addComment({ highlightId: h.id, body: '   ' }), /공백/);
+  assert.throws(() => s.addComment({ highlightId: h.id, body: 'x'.repeat(501) }), /500자/);
+  assert.throws(() => s.addComment({ highlightId: h.id, body: '좋아요', tags: ['nope'] }), /꼭지/);
+  assert.throws(() => s.addComment({ highlightId: 'ghost', body: PRESET_COMMENTS[0] }), /찾을 수 없습니다/);
+  assert.equal(s.state.comments.length, 0, '검증 실패 시 아무것도 추가되지 않음');
+  const c1 = s.addComment({ highlightId: h.id, body: PRESET_COMMENTS[0], tags: ['space', 'interest'] });
   assert.equal(c1.body, PRESET_COMMENTS[0]);
+  assert.deepEqual(c1.tags, ['interest', 'space']);
   assert.equal(c1.quote, '문장');
   assert.equal(c1.page, 1);
-  const c2 = s.addComment({ highlightId: null, presetIndex: 1 });
+  const c2 = s.addComment({ highlightId: null, body: ' 전체 문서 댓글 ' });
   assert.equal(c2.highlightId, null);
   assert.equal(c2.quote, null);
+  assert.equal(c2.body, '전체 문서 댓글');
+  assert.deepEqual(c2.tags, []);
   assert.equal(s.state.activeCommentId, c2.id);
   const r = s.addReply(c1.id);
-  assert.equal(c1.replies.length, 1);
+  assert.equal(r.body, PRESET_REPLY, '본문 생략 시 예시 답글');
+  const r2 = s.addReply(c1.id, ' 직접 쓴 답글 ');
+  assert.equal(r2.body, '직접 쓴 답글');
+  assert.equal(c1.replies.length, 2);
   assert.equal(r.author.name, '리뷰어 B(가상)');
-  assert.equal('replies' in r, false, '답글에는 하위 답글 컨테이너가 없다');
+  assert.equal('replies' in r, false, '답글에는 하위 답글 컨테이너가 없다(1단계)');
   assert.throws(() => s.addReply('nope'));
+  assert.throws(() => s.addReply(c1.id, '  '), /공백/);
   s.setActiveComment(c1.id);
   assert.equal(s.state.selectedHighlightId, h.id, '댓글 활성화 시 연결된 하이라이트도 선택');
+});
+
+test('스토어: 댓글·답글 수정은 같은 검증을 거치고 하이라이트 연결은 유지된다', () => {
+  const s = createReviewStore();
+  const h = s.addHighlight({ page: 2, rects: [[0, 0, 10, 10]], text: '원문' });
+  const c = s.addComment({ highlightId: h.id, body: '처음', tags: ['visit'] });
+  assert.throws(() => s.updateComment(c.id, { body: '' }), /입력/);
+  assert.throws(() => s.updateComment(c.id, { tags: ['x'] }), /꼭지/);
+  assert.throws(() => s.updateComment('ghost', { body: 'a' }), /찾을 수 없습니다/);
+  assert.equal(c.body, '처음', '실패한 수정은 반영되지 않음');
+  s.updateComment(c.id, { body: ' 고침 ', tags: ['space'] });
+  assert.equal(c.body, '고침'); assert.deepEqual(c.tags, ['space']); assert.ok(c.editedAt);
+  assert.equal(c.highlightId, h.id); assert.equal(c.quote, '원문'); assert.equal(c.page, 2);
+  s.updateComment(c.id, { tags: [] });
+  assert.equal(c.body, '고침', '태그만 바꾸면 본문 유지');
+  const r = s.addReply(c.id, '답');
+  assert.throws(() => s.updateReply(c.id, r.id, 'x'.repeat(501)), /500자/);
+  assert.throws(() => s.updateReply(c.id, 'nope', 'a'), /찾을 수 없습니다/);
+  s.updateReply(c.id, r.id, '답 수정');
+  assert.equal(r.body, '답 수정'); assert.ok(r.editedAt);
+});
+
+test('스토어: 전체/이 쪽만 탭은 쪽 기준으로 필터링하고 수를 센다', () => {
+  const s = createReviewStore();
+  const h1 = s.addHighlight({ page: 1, rects: [[0, 0, 10, 10]], text: '가' });
+  const h3 = s.addHighlight({ page: 3, rects: [[0, 0, 10, 10]], text: '다' });
+  s.addComment({ highlightId: h1.id, body: '1쪽' });
+  s.addComment({ highlightId: h3.id, body: '3쪽' });
+  s.addComment({ highlightId: null, body: '전체' });
+  assert.deepEqual(s.commentCount(1), { all: 3, page: 1 });
+  assert.deepEqual(s.commentCount(2), { all: 3, page: 0 });
+  assert.equal(s.visibleComments(1).length, 3, '기본 탭은 전체');
+  s.setTab('page');
+  assert.deepEqual(s.visibleComments(1).map((c) => c.body), ['1쪽']);
+  assert.deepEqual(s.visibleComments(3).map((c) => c.body), ['3쪽']);
+  assert.deepEqual(s.visibleComments(2), [], '전체 문서 댓글은 쪽 탭에 없음');
+  assert.throws(() => s.setTab('mine'));
 });
 
 test('스토어: 점수 선택 전에는 검토 완료 불가, 점수 변경 시 완료 해제', () => {
@@ -154,6 +223,6 @@ test('스토어: 구독 알림과 reset', () => {
   assert.equal(n, 2);
   s.reset();
   assert.equal(n, 3);
-  assert.deepEqual(s.state, { highlights: [], comments: [], score: null, completed: false, filter: 'all', selectedHighlightId: null, activeCommentId: null });
+  assert.deepEqual(s.state, { highlights: [], comments: [], score: null, completed: false, filter: 'all', tab: 'all', selectedHighlightId: null, activeCommentId: null });
   off(); s.setScore(4); assert.equal(n, 3);
 });
