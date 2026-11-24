@@ -1,0 +1,11 @@
+{
+  "name": "review-proposal-159815",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "pdfjs-dist": "5.4.624"
+  }
+}
