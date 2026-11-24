@@ -160,3 +160,29 @@ test('real sample font metrics and page-local scale avoid mobile selection drift
   assert.match(app, /style.fontFamily = '"IBM Plex Sans KR"'/);
   assert.match(app, /selectionRectsToPdf\(picked.range.getClientRects\(\), els.canvas.getBoundingClientRect\(\)/);
 });
+
+// R2-N1: 연결선은 쪽 폭(종이 오른쪽 끝)에서 시작한다. 선택 문장 끝점(first.left + first.width)에서 시작하면 본문 위에 취소선처럼 그려진다.
+test('표식 연결선은 쪽 밖 거터에서만: 시작 = viewport.width · 폭 = markerLeft - viewport.width', () => {
+  assert.match(app, /className = 'hl-link'/);
+  const linkStyle = app.match(/Object\.assign\(link\.style, \{(.*)\}\);/);
+  assert.ok(linkStyle, 'hl-link 스타일 지정 존재');
+  assert.match(linkStyle[1], /left: `\$\{view\.viewport\.width\}px`/, '연결선 시작은 쪽 폭(종이 밖)');
+  assert.match(linkStyle[1], /width: `\$\{Math\.max\(0, markerLeft - view\.viewport\.width\)\}px`/, '연결선 폭은 거터 8px 구간만');
+  assert.doesNotMatch(linkStyle[1], /first\.left|first\.width/, '선택 문장 끝점을 연결선 원점으로 쓰지 않음');
+  assert.match(app, /const markerLeft = view\.viewport\.width \+ 8;/);
+  assert.match(css, /\.hl-link \{ position: absolute; height: 0; border-top: 1px dashed/);
+  assert.match(css, /\.hl-rect \{[^}]*border-bottom: 1px solid/, '하이라이트 사각형 자체의 밑줄은 유지');
+});
+
+// R2-I1: 모바일 1:1 기본 + 쪽 안 가로 이동 + 맞춤 선택을 유지하고, 도구줄 아래 안내 한 줄(≤600px 에서만)로 알린다.
+test('모바일 안내: 도구줄 밖 별도 요소 · 600px 이하에서만 표시 · 12px · README 한계 기록', () => {
+  assert.match(html, /<\/div>\s*<p class="mobile-hint" id="mobile-hint">가로로 이동해 읽기 · 전체 보기는 맞춤<\/p>/, '도구줄(role=toolbar) 닫힌 직후, 도구줄 안이 아님');
+  assert.doesNotMatch(html, /role="toolbar"[\s\S]*mobile-hint[\s\S]*<\/div>\s*<\/div>\s*<div class="pdf-stage">/, '도구줄 내부에 안내 없음');
+  assert.match(css, /\.mobile-hint \{ display: none; font-size: 12px;/, '데스크톱 기본 숨김 · 12px 최소');
+  assert.match(css, /@media \(max-width: 600px\) \{ \.mobile-hint \{ display: block; \} \}/);
+  assert.match(app, /return view\.fit \? fit : Math\.max\(1, fit\);/, '모바일 기본 1:1 유지');
+  assert.match(html, /id="btn-fit"/, '맞춤 제공');
+  for (const s of ['가로로 이동해 읽어야 할 수 있고', '표식 거터가 화면 밖에', '글자가 작아집니다', '리플로우) 기능은 없습니다']) {
+    assert.ok(readme.includes(s), `README 한계에 "${s}" 누락`);
+  }
+});

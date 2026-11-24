@@ -232,9 +232,10 @@ function renderHighlights() {
     while (usedTops.some((t) => Math.abs(t - top) < 24)) top += 24;
     usedTops.push(top);
     const markerLeft = view.viewport.width + 8;
+    // 연결선은 쪽(종이) 밖 거터에서만 그린다: 쪽 오른쪽 끝 → 표식. 본문 글자 위에 선을 긋지 않는다(취소선처럼 보이는 문제 방지).
     const link = document.createElement('div');
     link.className = 'hl-link'; link.setAttribute('aria-hidden', 'true');
-    Object.assign(link.style, { left: `${first.left + first.width}px`, top: `${top + 11}px`, width: `${Math.max(0, markerLeft - first.left - first.width)}px` });
+    Object.assign(link.style, { left: `${view.viewport.width}px`, top: `${top + 11}px`, width: `${Math.max(0, markerLeft - view.viewport.width)}px` });
     const m = document.createElement('button');
     m.type = 'button'; m.className = 'hl-marker';
     m.style.left = `${markerLeft}px`; m.style.top = `${top}px`;
